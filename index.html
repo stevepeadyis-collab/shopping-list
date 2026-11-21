@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2e7d5b">
+<title>Shopping List</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<style>
+  :root { --green:#2e7d5b; --bg:#f4f6f5; --text:#1d2421; --muted:#7b8781; --line:#e2e7e4; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); font-size:18px; }
+  header { position:sticky; top:0; z-index:5; background:var(--green); color:#fff; padding:12px 14px; display:flex; align-items:center; gap:8px; }
+  header h1 { margin:0; font-size:21px; flex:1; }
+  header button { background:rgba(255,255,255,.18); color:#fff; border:0; border-radius:8px; padding:7px 10px; font-size:14px; }
+  #sync { font-size:12px; opacity:.85; }
+  main { padding:12px 12px 120px; max-width:640px; margin:0 auto; }
+  .add { display:flex; gap:8px; position:sticky; top:56px; z-index:4; background:var(--bg); padding:6px 0 10px; }
+  .add input { flex:1; font-size:18px; padding:13px 14px; border:1px solid var(--line); border-radius:12px; background:#fff; min-width:0; }
+  .add button { border:0; border-radius:12px; font-size:22px; width:52px; color:#fff; background:var(--green); }
+  #mic.listening { background:#c62828; animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.6; } }
+  #hint { font-size:14px; color:var(--muted); min-height:18px; margin:0 4px 6px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--green); margin:18px 4px 6px; display:flex; justify-content:space-between; align-items:center; }
+  h2.purchased { color:var(--muted); }
+  h2 button { border:0; background:none; color:var(--green); font-size:14px; font-weight:600; text-transform:none; letter-spacing:0; }
+  ul { list-style:none; margin:0; padding:0; background:#fff; border-radius:12px; overflow:hidden; }
+  li { display:flex; align-items:center; gap:12px; padding:13px 10px 13px 14px; border-bottom:1px solid var(--line); }
+  li:last-child { border-bottom:0; }
+  .box { width:26px; height:26px; flex:none; border:2px solid var(--green); border-radius:7px; display:grid; place-items:center; color:#fff; font-size:17px; }
+  li.done { background:#fafbfa; }
+  li.done .box { background:#a9b5af; border-color:#a9b5af; }
+  li.done .name, li.done .note { text-decoration:line-through; color:var(--muted); }
+  .text { flex:1; min-width:0; word-break:break-word; }
+  .note { color:var(--muted); font-size:15px; }
+  .note::before { content:" · "; }
+  .who { display:block; font-size:12px; color:#a3ada8; }
+  .icon { border:0; background:none; color:#a3ada8; font-size:20px; padding:4px 6px; }
+  .empty { text-align:center; color:var(--muted); padding:30px 10px; background:#fff; border-radius:12px; }
+  #login { text-align:center; padding:60px 20px; }
+  #login button, .primary { font-size:17px; padding:12px 20px; border:0; border-radius:12px; background:var(--green); color:#fff; }
+  #login p { color:var(--muted); }
+  .hidden { display:none !important; }
+  dialog { border:0; border-radius:16px; padding:18px; width:min(92vw,460px); max-height:85vh; }
+  dialog::backdrop { background:rgba(0,0,0,.4); }
+  dialog h3 { margin:0 0 12px; }
+  dialog label { display:block; font-size:14px; color:var(--muted); margin:12px 0 4px; }
+  dialog input, dialog select { width:100%; font-size:17px; padding:11px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+  .actions { display:flex; gap:10px; justify-content:flex-end; margin-top:18px; }
+  .secondary { font-size:17px; padding:12px 18px; border:1px solid var(--line); border-radius:12px; background:#fff; color:var(--text); }
+  .catrow { display:flex; align-items:center; gap:4px; margin-bottom:6px; }
+  .catrow input { flex:1; padding:9px; }
+  .catrow button { border:1px solid var(--line); background:#fff; border-radius:8px; width:36px; height:38px; font-size:16px; }
+  .addcat { display:flex; gap:6px; margin-top:10px; }
+  .addcat button { white-space:nowrap; }
+  .small { font-size:13px; color:var(--muted); margin:4px 0 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛒 Shopping List</h1>
+  <span id="sync"></span>
+  <button id="catsBtn" class="hidden" title="Aisles">Aisles</button>
+  <button id="signout" class="hidden">Sign out</button>
+</header>
+
+<div id="login" class="hidden">
+  <p>Sign in with your Google account to see the shared list.</p>
+  <button id="signin">Sign in with Google</button>
+  <p id="loginErr"></p>
+</div>
+
+<main id="app" class="hidden">
+  <form class="add" id="addForm">
+    <input id="item" placeholder="Add item… (e.g. milk, eggs and bread)" autocomplete="off" enterkeyhint="done">
+    <button type="button" id="mic" title="Speak">🎤</button>
+    <button type="submit" title="Add">＋</button>
+  </form>
+  <div id="hint"></div>
+  <div id="list"></div>
+</main>
+
+<!-- Edit one item -->
+<dialog id="editDlg">
+  <h3>Edit item</h3>
+  <label for="eName">Item</label>
+  <input id="eName" autocomplete="off">
+  <label for="eCat">Aisle</label>
+  <select id="eCat"></select>
+  <label for="eNote">Note (brand, size…)</label>
+  <input id="eNote" autocomplete="off" placeholder="e.g. Flora, 500 g">
+  <p class="small">The aisle and note are remembered for next time this item is added.</p>
+  <div class="actions">
+    <button class="secondary" id="eCancel">Cancel</button>
+    <button class="primary" id="eSave">Save</button>
+  </div>
+</dialog>
+
+<!-- Configure aisles -->
+<dialog id="catDlg">
+  <h3>Aisles</h3>
+  <p class="small">Put these in the order you walk the shop. Items in a deleted aisle show under "Other".</p>
+  <div id="catRows"></div>
+  <div class="addcat">
+    <input id="newCat" placeholder="New aisle" autocomplete="off">
+    <button class="secondary" id="addCatBtn">Add</button>
+  </div>
+  <div class="actions">
+    <button class="secondary" id="cCancel">Cancel</button>
+    <button class="primary" id="cSave">Save</button>
+  </div>
+</dialog>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut }
+  from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc,
+  updateDoc, deleteDoc, onSnapshot, serverTimestamp, writeBatch }
+  from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCXQ1ephaiyYKtkJWqjoIU2QoVKSgqCWaU",
+  authDomain: "shopping-list-cef51.firebaseapp.com",
+  projectId: "shopping-list-cef51",
+  storageBucket: "shopping-list-cef51.firebasestorage.app",
+  messagingSenderId: "1023815027967",
+  appId: "1:1023815027967:web:f22054f316e7f093cb90ca"
+};
+
+const fb = initializeApp(firebaseConfig);
+const auth = getAuth(fb);
+// Local cache: the list still works in a shop with poor reception and syncs when back online.
+const db = initializeFirestore(fb, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+const itemsRef = collection(db, "lists", "family", "items");
+const memoryRef = collection(db, "lists", "family", "memory");   // remembered aisle + note per item name
+const settingsDoc = doc(db, "lists", "family", "settings", "main");
+
+// ---------- Default aisles and first-time guesses ----------
+const DEFAULT_CATS = ["Fruit & Veg", "Bakery", "Meat & Seafood", "Deli", "Dairy & Eggs", "Pantry",
+  "Snacks & Drinks", "Frozen", "Household", "Health & Beauty"];
+
+const GUESS = {
+  "Fruit & Veg": "apple banana orange lemon lime grape pear peach plum nectarine mango berries strawberr blueberr raspberr avocado tomato potato onion garlic carrot broccoli cauliflower lettuce spinach cabbage celery cucumber capsicum zucchini pumpkin mushroom ginger herbs parsley coriander basil mint kiwi watermelon rockmelon melon pineapple corn salad|sweet potato kale rocket shallot leek chilli beetroot asparagus fruit veg",
+  "Bakery": "bread roll wrap bun croissant muffin bagel sourdough crumpet pita loaf cake",
+  "Meat & Seafood": "chicken beef mince steak lamb pork sausage snags fish salmon prawn chops roast turkey schnitzel barramundi",
+  "Deli": "ham salami bacon dip olives hummus prosciutto chorizo|sliced meat",
+  "Dairy & Eggs": "milk cheese yoghurt yogurt butter margarine cream eggs egg custard feta parmesan mozzarella|sour cream|cream cheese",
+  "Pantry": "rice pasta flour sugar salt pepper oil vinegar sauce stock spice cereal oats weet honey jam vegemite tea coffee noodles tinned canned tuna soup spaghetti lentils chickpeas yeast|baking powder|tomato sauce|tomato paste|coconut milk|peanut butter|baked beans|soy sauce",
+  "Snacks & Drinks": "chips biscuits chocolate lollies crackers nuts coke juice water cordial beer wine popcorn|soft drink|potato chips|muesli bar|mineral water",
+  "Frozen": "frozen ice peas pastry|ice cream|fish fingers|hash browns|ice blocks",
+  "Household": "detergent dishwashing laundry sponges bleach cleaner batteries foil tissues|toilet paper|paper towel|bin bags|garbage bags|cling wrap|washing powder|light globe",
+  "Health & Beauty": "shampoo conditioner soap toothpaste toothbrush deodorant razor sunscreen panadol paracetamol vitamins floss moisturiser|body wash"
+};
+// Longest keyword wins, so "coconut milk" beats "milk" and "ice cream" beats "cream".
+const KEYWORDS = Object.entries(GUESS).flatMap(([cat, s]) =>
+  s.split("|").flatMap((part, i) => i === 0 ? part.split(" ") : [part]).filter(Boolean).map(k => ({ k, cat }))
+).sort((a, b) => b.k.length - a.k.length);
+
+function guessCategory(name) {
+  const n = name.toLowerCase();
+  for (const { k, cat } of KEYWORDS) {
+    if (new RegExp("\\b" + k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(n) && categories.includes(cat)) return cat;
+  }
+  return "Other";
+}
+
+// ---------- State ----------
+const $ = id => document.getElementById(id);
+let items = [], memory = {}, categories = DEFAULT_CATS.slice(), user = null, unsubs = [];
+const keyOf = name => name.trim().toLowerCase().replace(/\//g, "-");
+
+// ---------- Sign in ----------
+$("signin").onclick = async () => {
+  const provider = new GoogleAuthProvider();
+  try { await signInWithPopup(auth, provider); }
+  catch (e) {
+    if (e.code === "auth/popup-blocked" || e.code === "auth/operation-not-supported-in-this-environment")
+      signInWithRedirect(auth, provider);
+    else $("loginErr").textContent = e.message;
+  }
+};
+$("signout").onclick = () => signOut(auth);
+
+const showErr = err => {
+  $("hint").textContent = err.code === "permission-denied"
+    ? "This Google account isn't allowed on the list yet." : "Sync problem: " + err.message;
+};
+
+onAuthStateChanged(auth, u => {
+  user = u;
+  $("login").classList.toggle("hidden", !!u);
+  for (const id of ["app", "signout", "catsBtn"]) $(id).classList.toggle("hidden", !u);
+  unsubs.forEach(f => f()); unsubs = [];
+  if (!u) return;
+  unsubs.push(onSnapshot(itemsRef, { includeMetadataChanges: true }, snap => {
+    items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    $("sync").textContent = snap.metadata.hasPendingWrites ? "saving…" : (snap.metadata.fromCache ? "offline" : "");
+    render();
+  }, showErr));
+  unsubs.push(onSnapshot(memoryRef, snap => {
+    memory = {}; snap.docs.forEach(d => memory[d.id] = d.data());
+  }, showErr));
+  unsubs.push(onSnapshot(settingsDoc, snap => {
+    if (snap.exists() && Array.isArray(snap.data().categories)) categories = snap.data().categories;
+    render();
+  }, showErr));
+});
+
+// ---------- Display ----------
+const firstName = () => (user?.displayName || user?.email || "").split(/[ @]/)[0];
+const ms = t => t?.toMillis?.() ?? Date.now();
+
+function render() {
+  const list = $("list");
+  list.innerHTML = "";
+  const todo = items.filter(i => !i.done).sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
+  const done = items.filter(i => i.done).sort((a, b) => ms(b.doneAt) - ms(a.doneAt));
+  if (!todo.length) list.insertAdjacentHTML("beforeend", `<div class="empty">Nothing on the list 🎉</div>`);
+
+  const groups = [...categories, "Other"];
+  for (const cat of groups) {
+    const inCat = todo.filter(i => (categories.includes(i.category) ? i.category : "Other") === cat);
+    if (!inCat.length) continue;
+    const h = document.createElement("h2"); h.textContent = cat; list.appendChild(h);
+    const ul = document.createElement("ul");
+    inCat.forEach(i => ul.appendChild(row(i)));
+    list.appendChild(ul);
+  }
+  if (done.length) {
+    list.insertAdjacentHTML("beforeend", `<h2 class="purchased">Purchased <button id="clearDone">Clear purchased</button></h2>`);
+    const ul = document.createElement("ul");
+    done.forEach(i => ul.appendChild(row(i)));
+    list.appendChild(ul);
+    $("clearDone").onclick = clearPurchased;
+  }
+}
+
+function row(i) {
+  const li = document.createElement("li");
+  if (i.done) li.className = "done";
+  li.innerHTML = `<span class="box">${i.done ? "✓" : ""}</span>
+    <span class="text"><span class="name"></span></span>
+    <button class="icon edit" title="Edit">✎</button><button class="icon del" title="Delete">×</button>`;
+  li.querySelector(".name").textContent = i.name;
+  const text = li.querySelector(".text");
+  if (i.note) { const n = document.createElement("span"); n.className = "note"; n.textContent = i.note; text.appendChild(n); }
+  if (i.by && !i.done) { const w = document.createElement("span"); w.className = "who"; w.textContent = i.by; text.appendChild(w); }
+  li.onclick = e => {
+    if (e.target.classList.contains("del")) return deleteDoc(doc(itemsRef, i.id));
+    if (e.target.classList.contains("edit")) return openEdit(i);
+    updateDoc(doc(itemsRef, i.id), { done: !i.done, doneAt: i.done ? null : serverTimestamp() });
+  };
+  return li;
+}
+
+function clearPurchased() {
+  // Only removes the items from the list; remembered aisles and notes stay.
+  const batch = writeBatch(db);
+  items.filter(i => i.done).forEach(i => batch.delete(doc(itemsRef, i.id)));
+  batch.commit();
+}
+
+// ---------- Adding ----------
+// Turns "milk, eggs and bread" into three items.
+function splitItems(text) {
+  return text.split(/,|\band then\b|\bthen\b|\band\b|\balso\b|\n/i)
+    .map(s => s.trim().replace(/[.!?]+$/, ""))
+    .filter(Boolean)
+    .map(s => s.charAt(0).toUpperCase() + s.slice(1));
+}
+
+function addText(text) {
+  const names = splitItems(text);
+  if (!names.length) return;
+  const batch = writeBatch(db);
+  for (const name of names) {
+    const existing = items.find(i => i.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      if (existing.done) batch.update(doc(itemsRef, existing.id), { done: false, doneAt: null });
+      continue;
+    }
+    const mem = memory[keyOf(name)];
+    batch.set(doc(itemsRef), {
+      name, done: false, by: firstName(), createdAt: serverTimestamp(),
+      category: mem?.category || guessCategory(name),
+      note: mem?.note || ""
+    });
+  }
+  batch.commit();
+  $("hint").textContent = "Added: " + names.join(", ") + "  (tap ✎ to change aisle or add a note)";
+}
+
+$("addForm").onsubmit = e => {
+  e.preventDefault();
+  const v = $("item").value;
+  $("item").value = "";
+  addText(v);
+};
+
+// ---------- Editing an item ----------
+let editing = null;
+function fillCatSelect(sel, current) {
+  sel.innerHTML = "";
+  for (const c of [...categories, "Other"]) {
+    const o = document.createElement("option"); o.value = o.textContent = c; sel.appendChild(o);
+  }
+  sel.value = categories.includes(current) ? current : "Other";
+}
+function openEdit(i) {
+  editing = i;
+  $("eName").value = i.name;
+  $("eNote").value = i.note || "";
+  fillCatSelect($("eCat"), i.category);
+  $("editDlg").showModal();
+}
+$("eCancel").onclick = e => { e.preventDefault(); $("editDlg").close(); };
+$("eSave").onclick = e => {
+  e.preventDefault();
+  const name = $("eName").value.trim() || editing.name;
+  const category = $("eCat").value, note = $("eNote").value.trim();
+  const batch = writeBatch(db);
+  batch.update(doc(itemsRef, editing.id), { name, category, note });
+  batch.set(doc(memoryRef, keyOf(name)), { category, note });   // remember for next time
+  batch.commit();
+  $("editDlg").close();
+};
+
+// ---------- Configuring aisles ----------
+let draft = [];   // [{ from: original name or null, name }]
+function drawCats() {
+  const box = $("catRows"); box.innerHTML = "";
+  draft.forEach((c, idx) => {
+    const r = document.createElement("div"); r.className = "catrow";
+    r.innerHTML = `<input><button title="Up">↑</button><button title="Down">↓</button><button title="Delete">✕</button>`;
+    const [inp, up, down, del] = r.children;
+    inp.value = c.name; inp.oninput = () => c.name = inp.value;
+    up.onclick = () => { if (idx > 0) { [draft[idx - 1], draft[idx]] = [draft[idx], draft[idx - 1]]; drawCats(); } };
+    down.onclick = () => { if (idx < draft.length - 1) { [draft[idx + 1], draft[idx]] = [draft[idx], draft[idx + 1]]; drawCats(); } };
+    del.onclick = () => { draft.splice(idx, 1); drawCats(); };
+    box.appendChild(r);
+  });
+}
+$("catsBtn").onclick = () => {
+  draft = categories.map(c => ({ from: c, name: c }));
+  drawCats();
+  $("catDlg").showModal();
+};
+$("addCatBtn").onclick = e => {
+  e.preventDefault();
+  const v = $("newCat").value.trim();
+  if (v) { draft.push({ from: null, name: v }); $("newCat").value = ""; drawCats(); }
+};
+$("cCancel").onclick = e => { e.preventDefault(); $("catDlg").close(); };
+$("cSave").onclick = e => {
+  e.preventDefault();
+  const clean = draft.map(c => ({ ...c, name: c.name.trim() })).filter(c => c.name && c.name !== "Other");
+  const batch = writeBatch(db);
+  batch.set(settingsDoc, { categories: [...new Set(clean.map(c => c.name))] });
+  // Carry renamed aisles over to items on the list and to remembered items.
+  for (const c of clean) {
+    if (!c.from || c.from === c.name) continue;
+    items.filter(i => i.category === c.from).forEach(i => batch.update(doc(itemsRef, i.id), { category: c.name }));
+    Object.entries(memory).filter(([, m]) => m.category === c.from)
+      .forEach(([k]) => batch.update(doc(memoryRef, k), { category: c.name }));
+  }
+  batch.commit();
+  $("catDlg").close();
+};
+
+// ---------- Voice ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) $("mic").classList.add("hidden");
+let rec = null;
+$("mic").onclick = () => {
+  if (rec) { rec.stop(); return; }
+  rec = new SR();
+  rec.lang = "en-AU";
+  rec.interimResults = true;
+  rec.continuous = false;
+  let finalText = "";
+  rec.onstart = () => { $("mic").classList.add("listening"); $("hint").textContent = "Listening… say items, e.g. “milk, eggs and bread”"; };
+  rec.onresult = e => {
+    let interim = "";
+    for (const r of e.results) r.isFinal ? finalText = r[0].transcript : interim = r[0].transcript;
+    $("item").value = finalText || interim;
+  };
+  rec.onerror = e => { $("hint").textContent = e.error === "not-allowed" ? "Microphone permission is blocked." : "Didn't catch that, try again."; };
+  rec.onend = () => {
+    $("mic").classList.remove("listening");
+    rec = null;
+    const text = $("item").value;
+    $("item").value = "";
+    if (text.trim()) addText(text);
+  };
+  rec.start();
+};
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
+</script>
+</body>
+</html>
