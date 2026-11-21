@@ -15,6 +15,10 @@
   header h1 { margin:0; font-size:21px; flex:1; }
   header button { background:rgba(255,255,255,.18); color:#fff; border:0; border-radius:8px; padding:7px 10px; font-size:14px; }
   #sync { font-size:12px; opacity:.85; }
+  #listSel { flex:1; min-width:0; font-size:20px; font-weight:700; color:#fff; background:transparent; border:0; padding:4px 0; }
+  #listSel option { color:#1d2421; font-weight:400; }
+  .foot { text-align:center; margin-top:40px; }
+  .foot button { border:0; background:none; color:var(--muted); font-size:14px; text-decoration:underline; }
   main { padding:12px 12px 120px; max-width:640px; margin:0 auto; }
   .add { display:flex; gap:8px; position:sticky; top:56px; z-index:4; background:var(--bg); padding:6px 0 10px; }
   .add input { flex:1; font-size:18px; padding:13px 14px; border:1px solid var(--line); border-radius:12px; background:#fff; min-width:0; }
@@ -59,10 +63,10 @@
 </head>
 <body>
 <header>
-  <h1>🛒 Shopping List</h1>
+  <h1 id="title">🛒 Shopping List</h1>
+  <select id="listSel" class="hidden" aria-label="Choose list"></select>
   <span id="sync"></span>
   <button id="catsBtn" class="hidden" title="Aisles">Aisles</button>
-  <button id="signout" class="hidden">Sign out</button>
 </header>
 
 <div id="login" class="hidden">
@@ -79,6 +83,7 @@
   </form>
   <div id="hint"></div>
   <div id="list"></div>
+  <p class="foot"><button id="signout">Sign out</button></p>
 </main>
 
 <!-- Edit one item -->
@@ -117,7 +122,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc,
-  updateDoc, deleteDoc, onSnapshot, serverTimestamp, writeBatch }
+  updateDoc, deleteDoc, onSnapshot, serverTimestamp, writeBatch, setDoc }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -133,9 +138,13 @@ const fb = initializeApp(firebaseConfig);
 const auth = getAuth(fb);
 // Local cache: the list still works in a shop with poor reception and syncs when back online.
 const db = initializeFirestore(fb, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
-const itemsRef = collection(db, "lists", "family", "items");
+// The Groceries list keeps its original storage spot; other lists live under lists/family/lists/<id>.
+const itemsCol = id => id === "groceries"
+  ? collection(db, "lists", "family", "items")
+  : collection(db, "lists", "family", "lists", id, "items");
 const memoryRef = collection(db, "lists", "family", "memory");   // remembered aisle + note per item name
 const settingsDoc = doc(db, "lists", "family", "settings", "main");
+let itemsRef = null;
 
 // ---------- Default aisles and first-time guesses ----------
 const DEFAULT_CATS = ["Fruit & Veg", "Bakery", "Meat & Seafood", "Deli", "Dairy & Eggs", "Pantry",
@@ -169,7 +178,22 @@ function guessCategory(name) {
 // ---------- State ----------
 const $ = id => document.getElementById(id);
 let items = [], memory = {}, categories = DEFAULT_CATS.slice(), user = null, unsubs = [];
-const keyOf = name => name.trim().toLowerCase().replace(/\//g, "-");
+let settings = {}, itemsUnsub = null, openId = null;
+const keyOf = name => name.trim().toLowerCase().replace(/[\/~]/g, "-");
+
+// Each phone remembers the last list it had open.
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+                set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+let curList = store.get("lastList") || "groceries";
+
+const listsMeta = () => Array.isArray(settings.lists) && settings.lists.length
+  ? settings.lists : [{ id: "groceries", name: "Groceries" }];
+const catsFor = id => id === "groceries"
+  ? (Array.isArray(settings.categories) ? settings.categories : DEFAULT_CATS)
+  : (listsMeta().find(l => l.id === id)?.categories || []);
+// Remembered aisles/notes are kept per list (Groceries keys have no prefix, for compatibility).
+const memKey = name => (curList === "groceries" ? "" : curList + "~") + keyOf(name);
+const memInList = k => curList === "groceries" ? !k.includes("~") : k.startsWith(curList + "~");
 
 // ---------- Sign in ----------
 $("signin").onclick = async () => {
@@ -191,22 +215,78 @@ const showErr = err => {
 onAuthStateChanged(auth, u => {
   user = u;
   $("login").classList.toggle("hidden", !!u);
-  for (const id of ["app", "signout", "catsBtn"]) $(id).classList.toggle("hidden", !u);
+  for (const id of ["app", "catsBtn", "listSel"]) $(id).classList.toggle("hidden", !u);
+  $("title").classList.toggle("hidden", !!u);
   unsubs.forEach(f => f()); unsubs = [];
+  if (itemsUnsub) { itemsUnsub(); itemsUnsub = null; openId = null; }
   if (!u) return;
-  unsubs.push(onSnapshot(itemsRef, { includeMetadataChanges: true }, snap => {
-    items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    $("sync").textContent = snap.metadata.hasPendingWrites ? "saving…" : (snap.metadata.fromCache ? "offline" : "");
-    render();
-  }, showErr));
   unsubs.push(onSnapshot(memoryRef, snap => {
     memory = {}; snap.docs.forEach(d => memory[d.id] = d.data());
   }, showErr));
   unsubs.push(onSnapshot(settingsDoc, snap => {
-    if (snap.exists() && Array.isArray(snap.data().categories)) categories = snap.data().categories;
-    render();
+    settings = snap.exists() ? snap.data() : {};
+    if (!listsMeta().some(l => l.id === curList)) curList = listsMeta()[0].id;
+    drawListSel();
+    openList(curList);
   }, showErr));
 });
+
+// ---------- Lists ----------
+function openList(id) {
+  curList = id;
+  store.set("lastList", id);
+  categories = catsFor(id);
+  $("listSel").value = id;
+  if (openId === id) { render(); return; }
+  if (itemsUnsub) itemsUnsub();
+  openId = id; items = []; render();
+  itemsRef = itemsCol(id);
+  itemsUnsub = onSnapshot(itemsRef, { includeMetadataChanges: true }, snap => {
+    if (openId !== id) return;
+    items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    $("sync").textContent = snap.metadata.hasPendingWrites ? "saving…" : (snap.metadata.fromCache ? "offline" : "");
+    render();
+  }, showErr);
+}
+
+function drawListSel() {
+  const sel = $("listSel");
+  sel.innerHTML = "";
+  for (const l of listsMeta()) sel.add(new Option(l.name, l.id));
+  sel.add(new Option("──────────", "", false, false)); sel.lastChild.disabled = true;
+  sel.add(new Option("＋ New list…", "__new"));
+  sel.add(new Option("✎ Rename this list…", "__rename"));
+  sel.add(new Option("🗑 Delete this list…", "__delete"));
+  sel.value = curList;
+}
+
+const saveLists = lists => setDoc(settingsDoc, { lists }, { merge: true });
+
+$("listSel").onchange = () => {
+  const v = $("listSel").value;
+  $("listSel").value = curList;
+  const cur = listsMeta().find(l => l.id === curList);
+  if (v === "__new") {
+    const name = (prompt("Name of the new list (e.g. Hardware)") || "").trim();
+    if (!name) return;
+    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 20) + "-" + Math.random().toString(36).slice(2, 6);
+    saveLists([...listsMeta(), { id, name, categories: [] }]);
+    curList = id;   // the settings update will open it
+    $("hint").textContent = `New list "${name}". Tap Aisles to set up sections for it.`;
+  } else if (v === "__rename") {
+    const name = (prompt("New name for this list", cur.name) || "").trim();
+    if (name) saveLists(listsMeta().map(l => l.id === curList ? { ...l, name } : l));
+  } else if (v === "__delete") {
+    if (listsMeta().length < 2) { alert("You need at least one list."); return; }
+    if (!confirm(`Delete "${cur.name}" and everything on it? This affects both phones.`)) return;
+    const batch = writeBatch(db);
+    items.forEach(i => batch.delete(doc(itemsRef, i.id)));
+    batch.set(settingsDoc, { lists: listsMeta().filter(l => l.id !== curList) }, { merge: true });
+    batch.commit();
+  } else if (v) {
+    openList(v);
+  }
+};
 
 // ---------- Display ----------
 const firstName = () => (user?.displayName || user?.email || "").split(/[ @]/)[0];
@@ -281,7 +361,7 @@ function addText(text) {
       if (existing.done) batch.update(doc(itemsRef, existing.id), { done: false, doneAt: null });
       continue;
     }
-    const mem = memory[keyOf(name)];
+    const mem = memory[memKey(name)];
     batch.set(doc(itemsRef), {
       name, done: false, by: firstName(), createdAt: serverTimestamp(),
       category: mem?.category || guessCategory(name),
@@ -322,7 +402,7 @@ $("eSave").onclick = e => {
   const category = $("eCat").value, note = $("eNote").value.trim();
   const batch = writeBatch(db);
   batch.update(doc(itemsRef, editing.id), { name, category, note });
-  batch.set(doc(memoryRef, keyOf(name)), { category, note });   // remember for next time
+  batch.set(doc(memoryRef, memKey(name)), { category, note });   // remember for next time
   batch.commit();
   $("editDlg").close();
 };
@@ -357,12 +437,14 @@ $("cSave").onclick = e => {
   e.preventDefault();
   const clean = draft.map(c => ({ ...c, name: c.name.trim() })).filter(c => c.name && c.name !== "Other");
   const batch = writeBatch(db);
-  batch.set(settingsDoc, { categories: [...new Set(clean.map(c => c.name))] });
+  const names = [...new Set(clean.map(c => c.name))];
+  if (curList === "groceries") batch.set(settingsDoc, { categories: names }, { merge: true });
+  else batch.set(settingsDoc, { lists: listsMeta().map(l => l.id === curList ? { ...l, categories: names } : l) }, { merge: true });
   // Carry renamed aisles over to items on the list and to remembered items.
   for (const c of clean) {
     if (!c.from || c.from === c.name) continue;
     items.filter(i => i.category === c.from).forEach(i => batch.update(doc(itemsRef, i.id), { category: c.name }));
-    Object.entries(memory).filter(([, m]) => m.category === c.from)
+    Object.entries(memory).filter(([k, m]) => memInList(k) && m.category === c.from)
       .forEach(([k]) => batch.update(doc(memoryRef, k), { category: c.name }));
   }
   batch.commit();
